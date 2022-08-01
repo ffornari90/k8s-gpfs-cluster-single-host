@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: %%%PODNAME%%%
+  namespace: %%%NAMESPACE%%%
+  labels:
+    app: gpfs-mgr
+spec:
+  selector:
+    matchLabels:
+      app: gpfs-mgr
+  serviceName: %%%PODNAME%%%
+  replicas: 1
+  template:
+    metadata:
+      name: %%%PODNAME%%% 
+      labels:
+        app: gpfs-mgr
+    spec:
+      hostNetwork: false
+      nodeName: %%%NODENAME%%%
+      containers:
+      - name: %%%PODNAME%%%
+        image: %%%IMAGE_REPO%%%:%%%IMAGE_TAG%%%
+        command: [ "/bin/bash", "-c", "--" ]
+        args: [ "./scripts/init-container.sh" ]
+        securityContext:
+          privileged: true
+        readinessProbe:
+          tcpSocket:
+            port: 2222
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+          - name: init-container-rhel8-4
+            mountPath: /scripts/init-container.sh
+            subPath: init-container.sh
+          - name: node-list
+            mountPath: /root/node.list
+            subPath: node.list
+          - name: gendir
+            mountPath: /var/mmfs
+          - name: installdir
+            mountPath: /usr/lpp
+          - name: etcsshdir
+            mountPath: /etc/ssh
+          - name: rootsshdir
+            mountPath: /root/.ssh
+      volumes:
+      - name: init-container-rhel8-4
+        configMap:
+          name: init-container-rhel8-4
+          defaultMode: 0755
+      - name: node-list
+        configMap:
+          name: node-list
+          defaultMode: 0644
+      - name: gendir
+        hostPath:
+          path: /root/client%%%NUMBER%%%/var_mmfs
+          type: Directory
+      - name: installdir
+        hostPath:
+          path: /usr/lpp
+          type: Directory
+      - name: etcsshdir
+        hostPath:
+          path: /root/client%%%NUMBER%%%/etc_ssh
+          type: Directory
+      - name: rootsshdir
+        hostPath:
+          path: /root/client%%%NUMBER%%%/root_ssh
+          type: Directory

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpfs-svc
+  namespace: %%%NAMESPACE%%%
+spec:
+  ports:
+  - port: 1191
+    targetPort: 1191
+    protocol: TCP
+    name: gpfs
+  externalIPs:
+    - %%%HOST_IP%%%
+  selector:
+    app: gpfs-mgr

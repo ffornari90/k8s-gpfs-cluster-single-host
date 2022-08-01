@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-list
+  namespace: %%%NAMESPACE%%%
+data:
+  node.list: |

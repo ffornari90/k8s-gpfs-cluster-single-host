@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: init-container-rhel8-4
+  namespace: %%%NAMESPACE%%%
+data:
+  init-container.sh: |
+   #!/bin/bash
+   echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+   rm -f /var/run/yum.pid
+   mkdir -p /var/lib/rpm/backup
+   cp -a /var/lib/rpm/__db* /var/lib/rpm/backup/
+   rm -f /var/lib/rpm/__db.[0-9][0-9]*
+   rpm --quiet -qa
+   rpm --rebuilddb
+   yum clean all
+   yum install -y python3 python3-devel python3-pip git
+   pip3 install CherryPy
+   yum install -y which perl initscripts iproute hostname
+   yum install -y http://ds-004.cr.cnaf.infn.it:8080/kernel-rpms/kernel-headers-4.18.0-305.49.1.el8_4.x86_64.rpm
+   yum install -y http://ds-004.cr.cnaf.infn.it:8080/kernel-rpms/kernel-devel-4.18.0-305.49.1.el8_4.x86_64.rpm
+   #yum install -y http://ds-004.cr.cnaf.infn.it:8080/kernel-rpms/kernel-core-4.18.0-305.49.1.el8_4.x86_64.rpm
+   #yum install -y http://ds-004.cr.cnaf.infn.it:8080/kernel-rpms/kernel-modules-4.18.0-305.49.1.el8_4.x86_64.rpm
+   #yum install -y http://ds-004.cr.cnaf.infn.it:8080/kernel-rpms/kernel-4.18.0-305.49.1.el8_4.x86_64.rpm
+   yum install -y make cpp gcc gcc-c++ elfutils-devel elfutils dmidecode
+   yum install -y openssh-server openssh-clients openssl
+   git clone https://github.com/gdraheim/docker-systemctl-replacement.git
+   cp docker-systemctl-replacement/files/docker/systemctl3.py /usr/bin/
+   cp docker-systemctl-replacement/files/docker/systemctl3.py /bin/systemctl
+   cp docker-systemctl-replacement/files/docker/journalctl3.py /bin/journalctl
+   echo "[gpfs]
+   name=gpfs packages
+   baseurl=file:///usr/lpp/mmfs/5.1.3.1/gpfs_rpms/
+   enabled=1
+   gpgcheck=0
+   [zimon]
+   name=zimon packages
+   baseurl=file:///usr/lpp/mmfs/5.1.3.1/zimon_rpms/rhel8/
+   enabled=1
+   gpgcheck=0" | tee /etc/yum.repos.d/gpfs.repo
+   echo "export PATH=\$PATH:/usr/lpp/mmfs/bin" >> /root/.bash_profile
+   yum install -y gpfs.base gpfs.docs gpfs.ext gpfs.gpl gpfs.gskit gpfs.msg.en_US
+   yum install -y gpfs.gss.pmsensors-5.1.3-1.el8.x86_64
+   yum install -y gpfs.gss.pmcollector-5.1.3-1.el8.x86_64
+   /usr/lpp/mmfs/bin/mmbuildgpl
+   printf 'UUID=%s %s\t\t%s\t%s\t\t%s %s\n' \
+   "$(blkid $(df -h /usr/lpp | awk '{print $1}' | grep -v Filesystem) | awk '{print $2}' | awk -F'\"' '{print $2}')" \
+   "/usr/lpp" \
+   "$(blkid $(df -h /usr/lpp | awk '{print $1}' | grep -v Filesystem) | awk '{print $3}' | awk -F'\"' '{print $2}')" \
+   "defaults" "0" "0" >> /etc/fstab
+   printf 'UUID=%s %s\t\t%s\t%s\t\t%s %s\n' \
+   "$(blkid $(df -h /var/mmfs | awk '{print $1}' | grep -v Filesystem) | awk '{print $2}' | awk -F'\"' '{print $2}')" \
+   "/var/mmfs" \
+   "$(blkid $(df -h /var/mmfs | awk '{print $1}' | grep -v Filesystem) | awk '{print $3}' | awk -F'\"' '{print $2}')" \
+   "defaults" "0" "0" >> /etc/fstab
+   cp /etc/hosts hosts
+   sed -i "s/"$(awk 'END { print $2 }' hosts)"//g" hosts
+   yes | cp hosts /etc/hosts
+   rm -f hosts
+   mkdir -p /var/run/sshd && mkdir -p /root/.ssh
+    if ! [ "$(ls -A /etc/ssh/ssh_host* 2>/dev/null)" ]; then
+     chmod 700 -R /root/.ssh
+     ssh-keygen -t rsa -f /etc/ssh/ssh_host_rsa_key -N ''
+     ssh-keygen -t ecdsa -f /etc/ssh/ssh_host_ecdsa_key -N ''
+     ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N ''
+     chmod 400 /etc/ssh/*_key
+   fi
+   if ! [ "$(ls -A /root/.ssh/authorized_keys 2>/dev/null)" ]; then
+     touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
+   fi
+   if ! [ "$(ls -A /root/.ssh/id_rsa* 2>/dev/null)" ]; then
+     cp /etc/ssh/ssh_host_rsa_key /root/.ssh/id_rsa
+     cp /etc/ssh/ssh_host_rsa_key.pub /root/.ssh/id_rsa.pub
+   fi
+   sed -ri 's/#   IdentityFile ~\/.ssh\/id_rsa/   IdentityFile ~\/.ssh\/id_rsa/' /etc/ssh/ssh_config
+   sed -ri 's/#PermitRootLogin yes/PermitRootLogin yes/g' /etc/ssh/sshd_config
+   sed -ri 's/#Port 22/Port 2222/g' /etc/ssh/sshd_config
+   sed -ri 's/#   Port 22/   Port 2222/g' /etc/ssh/ssh_config
+   yum -y install glibc-locale-source glibc-langpack-it
+   localedef -f UTF-8 -i en_US en_US.UTF-8
+   bash -c "printf \"export LC_CTYPE=en_US.UTF-8\nexport LC_ALL=en_US.UTF-8\n\" | tee -a /root/.bashrc"
+   bash -c 'echo -e "export PATH=/usr/lpp/mmfs/bin:\$PATH" | tee -a /root/.bashrc'
+   /usr/sbin/sshd -D
