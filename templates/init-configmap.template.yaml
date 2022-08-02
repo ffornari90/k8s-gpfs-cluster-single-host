@@ -48,10 +48,6 @@ data:
    "/var/mmfs" \
    "$(blkid $(df -h /var/mmfs | awk '{print $1}' | grep -v Filesystem) | awk '{print $3}' | awk -F'\"' '{print $2}')" \
    "defaults" "0" "0" >> /etc/fstab
-   #cp /etc/hosts hosts
-   #sed -i "s/"$(awk 'END { print $2 }' hosts)"//g" hosts
-   #yes | cp hosts /etc/hosts
-   #rm -f hosts
    mkdir -p /var/run/sshd && mkdir -p /root/.ssh
     if ! [ "$(ls -A /etc/ssh/ssh_host* 2>/dev/null)" ]; then
      chmod 700 -R /root/.ssh
