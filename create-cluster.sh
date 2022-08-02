@@ -16,7 +16,7 @@ White='\033[0;37m'        # White
 # **************************************************************************** #
 
 function usage () {
-    echo "Usage: $0 [-n <k8s_namespace>] [-H <hostname>] [-C <cluster_name>] [-b <cc_image_repo>] [-i <cc_image_tag>] [-q <quorum_count>] [-m <manager_count>]"
+    echo "Usage: $0 [-n <k8s_namespace>] [-H <hostname>] [-C <cluster_name>] [-b <cc_image_repo>] [-i <cc_image_tag>] [-q <quorum_count>] [-m <manager_count>] [-t <timeout>]"
     echo
     echo "-n    Specify desired kubernetes Namespace on which the instance will live (default is 'ns\$(date +%s)')"
     echo "      It must be a compliant DNS-1123 label and match =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
@@ -27,6 +27,7 @@ function usage () {
     echo "-i    Specify docker image tag to be used for the Pods creation (default is $CC_IMAGE_TAG)"
     echo "-q    Specify desired number of quorum servers (default is 1)"
     echo "-m    Specify desired number of manager servers (default is 1)"
+    echo "-t    Specify desired timeout for Pods creation in seconds (default is 3600)"
     echo
     echo "-h    Show usage and exit"
     echo
@@ -48,20 +49,15 @@ function gen_role () {
         sed -i "s|%%%IMAGE_REPO%%%|${image_repo}|g" "gpfs-${role}${i}.yaml"
         sed -i "s/%%%IMAGE_TAG%%%/${image_tag}/g" "gpfs-${role}${i}.yaml"
         if [ -z "$hostname" ]; then
-          workers=("ds-505" "ds-506" "ds-527" "ds-528")
+          workers=(`kubectl get nodes -lnode-role.kubernetes.io/core="" -ojsonpath="{.items[*].metadata.name}"`)
           RANDOM=$$$(date +%s)
           selected_worker=${workers[ $RANDOM % ${#workers[@]} ]}
-          sed -i "s/%%%NODENAME%%%/${selected_worker}.cr.cnaf.infn.it/g" "gpfs-${role}${i}.yaml"
+          sed -i "s/%%%NODENAME%%%/${selected_worker}/g" "gpfs-${role}${i}.yaml"
         else
-          sed -i "s/%%%NODENAME%%%/${hostname}.cr.cnaf.infn.it/g" "gpfs-${role}${i}.yaml"
+          sed -i "s/%%%NODENAME%%%/${hostname}/g" "gpfs-${role}${i}.yaml"
         fi
-        sed -i "s/%%%PODNAME%%%/${HOST_NAME}-gpfs-${role}-${i}/g" "gpfs-${role}${i}.yaml"
+        sed -i "s/%%%PODNAME%%%/${HOST_NAME%%.*}-gpfs-${role}-${i}/g" "gpfs-${role}${i}.yaml"
     done
-}
-
-function get_podname () {
-    local app=$1
-    kubectl get pods --namespace=$NAMESPACE -l app=$app | grep -E '([0-9]+)/\1' | awk '{print $1}' # Get only READY pods
 }
 
 function k8s-exec() {
@@ -86,8 +82,9 @@ CC_IMAGE_REPO="tgagor/centos-stream"
 CC_IMAGE_TAG="8"
 MGR_COUNT=1
 QRM_COUNT=1
+TIMEOUT=3600
 
-while getopts 'n:C:H:b:i:q:m:h' opt; do
+while getopts 'n:C:H:b:i:q:m:t:h' opt; do
     case "${opt}" in
         n) # a DNS-1123 label must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character
             if [[ $OPTARG =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]];
@@ -114,7 +111,12 @@ while getopts 'n:C:H:b:i:q:m:h' opt; do
         m) # mgr count must be an integer greater than 0
             if [[ $OPTARG =~ ^[0-9]+$ ]] && [[ $OPTARG -gt 0 ]]; then
                 MGR_COUNT=${OPTARG}
-                [[ $OPTARG -gt 1 ]] && with_qdb=true
+            else
+                echo "! Wrong arg -$opt"; exit 1
+            fi ;;
+        t) # timeout must be an integer greater than 0
+            if [[ $OPTARG =~ ^[0-9]+$ ]] && [[ $OPTARG -gt 0 ]]; then
+                TIMEOUT=${OPTARG}
             else
                 echo "! Wrong arg -$opt"; exit 1
             fi ;;
@@ -134,6 +136,7 @@ echo "CC_IMAGE_REPO=$CC_IMAGE_REPO"
 echo "CC_IMAGE_TAG=$CC_IMAGE_TAG"
 echo "QRM_COUNT=$QRM_COUNT"
 echo "MGR_COUNT=$MGR_COUNT"
+echo "TIMEOUT=$TIMEOUT"
 
 
 # **********************************************************************************************
@@ -158,11 +161,11 @@ cp "$TEMPLATES_DIR/cluster-configmap.template.yaml" "cluster-configmap.yaml"
 sed -i "s/%%%NAMESPACE%%%/${NAMESPACE}/g" "cluster-configmap.yaml"
 for i in $(seq 1 $MGR_COUNT)
 do
-  echo "   ${HOST_NAME}-gpfs-mgr-$i-0:manager" | tee -a "cluster-configmap.yaml"
+  echo "   ${HOST_NAME%%.*}-gpfs-mgr-$i-0:manager" | tee -a "cluster-configmap.yaml"
 done
 for i in $(seq 1 $QRM_COUNT)
 do
-  sed -i "s/${HOST_NAME}-gpfs-mgr-$i-0:manager/${HOST_NAME}-gpfs-mgr-$i-0:quorum-manager/" "cluster-configmap.yaml"
+  sed -i "s/${HOST_NAME%%.*}-gpfs-mgr-$i-0:manager/${HOST_NAME%%.*}-gpfs-mgr-$i-0:quorum-manager/" "cluster-configmap.yaml"
 done
 
 # Generate the external service
@@ -193,7 +196,6 @@ kubectl apply -f "cluster-configmap.yaml"
 kubectl apply -f "external-svc.yaml"
 
 # Conditionally split the pod creation in groups, since apparently the external provisioner (manila?) can't deal with too many volume-creation request per second
-# [ $with_pvc == true ] && g=6 || g=${#roles_yaml[@]}
 g=1
 count=1;
 for ((i=0; i < ${#roles_yaml[@]}; i+=g)); do
@@ -227,7 +229,7 @@ for ((i=0; i < ${#roles_yaml[@]}; i+=g)); do
 
 done
 
-if [[ $count -le 600 ]] ; then
+if [[ $count -le $TIMEOUT ]] ; then
     echo -e "${Green} OK, all the Pods are in Ready state! $podsReady/$podsReadyExpected ${Color_Off}"
 else
     echo -e "${Red} KO, not all the Pods are in Ready state! $podsReady/$podsReadyExpected ${Color_Off}"
@@ -239,19 +241,14 @@ fi
 # Start the GPFS services in each Pod
 # **********************************************************************************************
 
-# Give the time to execute the readinessProbe, and so the eos-specific configuration of the containers
-# kubectl wait pods --all --namespace $NAMESPACE --for=condition=Ready # @note experimental 'kubectl wait' command
-
 echo "Starting the GPFS services in each Pod"
 
-echo -e "${Yellow} Setup mutual Pods resolution on all the Pods... ${Color_Off}"
+echo -e "${Yellow} Setup mutual resolution on all the Pods... ${Color_Off}"
 
-pods=(`kubectl -n $NAMESPACE get po | grep gpfs | awk '{print $1}'`)
+pods=(`kubectl -n $NAMESPACE get po -ojsonpath="{.items[*].metadata.name}"`)
 for pod in ${pods[@]}
 do
-  printf '%s %s\n' "$(kubectl -n $NAMESPACE exec $pod -- bash -c 'cat /etc/hosts | grep gpfs | awk '"'"'{print $1}'"'"'')" \
-  "$(kubectl -n $NAMESPACE exec $pod -- bash -c 'cat /etc/hosts | grep gpfs | awk '"'"'{print $2}'"'"'')" | \
-  tee -a hosts.tmp
+  printf '%s %s\n' $(kubectl -n $NAMESPACE get po $pod -ojsonpath='{.status.podIP}') $pod | tee -a hosts.tmp
 done
 for pod in ${pods[@]}
 do
@@ -263,7 +260,6 @@ rm -f hosts.tmp
 
 echo -e "${Yellow} Distribute SSH keys on all the Pods... ${Color_Off}"
 
-pods=(`kubectl -n $NAMESPACE get po | grep gpfs | awk '{print $1}'`)
 for pod in ${pods[@]}
 do
   for i in $(seq 1 $MGR_COUNT)
@@ -279,14 +275,22 @@ do
   done
 done
 
-echo -e "${Yellow} Exec on quorum-manager (GPFS cluster setup)... ${Color_Off}"
-k8s-exec gpfs-mgr1 "mmcrcluster -N /root/node.list -C ${CLUSTER_NAME} -r /usr/bin/ssh -R /usr/bin/scp --profile gpfsprotocoldefaults"
+echo -e "${Yellow} Exec GPFS cluster setup on quorum-manager... ${Color_Off}"
+k8s-exec gpfs-mgr1 "/usr/lpp/mmfs/bin/mmcrcluster -N /root/node.list -C ${CLUSTER_NAME} -r /usr/bin/ssh -R /usr/bin/scp --profile gpfsprotocoldefaults"
 if [[ "$?" -ne 0 ]]; then exit 1; fi
 
-echo -e "${Yellow} Exec on every GPFS quorum-manager... ${Color_Off}"
+echo -e "${Yellow} Assign GPFS server licenses to managers... ${Color_Off}"
+k8s-exec gpfs-mgr1 "/usr/lpp/mmfs/bin/mmchlicense server --accept -N managerNodes"
+if [[ "$?" -ne 0 ]]; then exit 1; fi
+
+echo -e "${Yellow} Check GPFS cluster configuration... ${Color_Off}"
+k8s-exec gpfs-mgr1 "/usr/lpp/mmfs/bin/mmlscluster"
+if [[ "$?" -ne 0 ]]; then exit 1; fi
+
+echo -e "${Yellow} Start GPFS daemon on every manager... ${Color_Off}"
 failure=0; pids="";
 for i in $(seq 1 $MGR_COUNT); do
-    k8s-exec gpfs-mgr${i} "mmstartup"
+    k8s-exec gpfs-mgr${i} "/usr/lpp/mmfs/bin/mmstartup"
     pids="${pids} $!"
     sleep 0.1
 done
@@ -298,15 +302,23 @@ if [[ "${failure}" == "1" ]]; then
     exit 1
 fi
 
+echo -e "${Yellow} Wait until GPFS daemon is active on every manager... ${Color_Off}"
+# Check status
+check_active() {
+    [[ "${*}" =~ ^(active )*active$ ]]
+    return
+}
+node_states=(`k8s-exec gpfs-mgr1 '/usr/lpp/mmfs/bin/mmgetstate -a | grep gpfs | awk '"'"'{print \$3}'"'"`)
+until check_active ${node_states[*]}
+do
+  node_states=(`k8s-exec gpfs-mgr1 '/usr/lpp/mmfs/bin/mmgetstate -a | grep gpfs | awk '"'"'{print \$3}'"'"`)
+done
+sleep 30
+oc -n $NAMESPACE rsh $(oc -n $NAMESPACE get po -lapp=gpfs-mgr1 -ojsonpath="{.items[0].metadata.name}") \
+/usr/lpp/mmfs/bin/mmhealth cluster show
+
 # @todo add error handling
 echo -e "${Green} Exec went OK for all the Pods ${Color_Off}"
-
-
-# Check status
-k8s-exec gpfs-mgr1 "mmhealth cluster show"
-for i in $(seq 1 $MGR_COUNT); do
-    k8s-exec gpfs-mgr${i} "mmgetstate"
-done
 
 # print configuration summary
 echo ""
@@ -316,3 +328,4 @@ echo "CC_IMAGE_REPO=$CC_IMAGE_REPO"
 echo "CC_IMAGE_TAG=$CC_IMAGE_TAG"
 echo "QRM_COUNT=$QRM_COUNT"
 echo "MGR_COUNT=$MGR_COUNT"
+echo "TIMEOUT=$TIMEOUT"

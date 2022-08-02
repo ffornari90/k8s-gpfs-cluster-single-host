@@ -4,18 +4,18 @@ metadata:
   name: %%%PODNAME%%%
   namespace: %%%NAMESPACE%%%
   labels:
-    app: gpfs-mgr
+    app: gpfs-mgr%%%NUMBER%%%
 spec:
   selector:
     matchLabels:
-      app: gpfs-mgr
+      app: gpfs-mgr%%%NUMBER%%%
   serviceName: %%%PODNAME%%%
   replicas: 1
   template:
     metadata:
       name: %%%PODNAME%%% 
       labels:
-        app: gpfs-mgr
+        app: gpfs-mgr%%%NUMBER%%%
     spec:
       hostNetwork: false
       nodeName: %%%NODENAME%%%
