@@ -16,9 +16,9 @@ White='\033[0;37m'        # White
 # **************************************************************************** #
 
 function usage () {
-    echo "Usage: $0 [-n <k8s_namespace>] [-H <hostname>] [-C <cluster_name>] [-b <cc_image_repo>] [-i <cc_image_tag>] [-q <quorum_count>] [-m <manager_count>] [-t <timeout>]"
+    echo "Usage: $0 [-N <k8s_namespace>] [-H <hostname>] [-C <cluster_name>] [-b <cc_image_repo>] [-i <cc_image_tag>] [-q <quorum_count>] [-m <manager_count>] [-n <nsd_count>] [-d <nsd_devices>] [-t <timeout>]"
     echo
-    echo "-n    Specify desired kubernetes Namespace on which the instance will live (default is 'ns\$(date +%s)')"
+    echo "-N    Specify desired kubernetes Namespace on which the instance will live (default is 'ns\$(date +%s)')"
     echo "      It must be a compliant DNS-1123 label and match =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
     echo "      In practice, must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character"
     echo "-H    Specify the hostname of the worker node on which the GPFS cluster must be deployed (default is a random worker node)"
@@ -27,6 +27,8 @@ function usage () {
     echo "-i    Specify docker image tag to be used for the Pods creation (default is $CC_IMAGE_TAG)"
     echo "-q    Specify desired number of quorum servers (default is 1)"
     echo "-m    Specify desired number of manager servers (default is 1)"
+    echo "-n    Specify desired number of Network Shared Disks (default is 0)"
+    echo "-d    Specify desired list of NSD devices (comma separated, e.g.: /dev/sda,/dev/sdb)"
     echo "-t    Specify desired timeout for Pods creation in seconds (default is 3600)"
     echo
     echo "-h    Show usage and exit"
@@ -78,15 +80,17 @@ function k8s-exec() {
 # defaults
 NAMESPACE="ns$(date +%s)"
 CLUSTER_NAME="gpfs$(date +%s)"
-CC_IMAGE_REPO="tgagor/centos-stream"
-CC_IMAGE_TAG="8"
+CC_IMAGE_REPO="redhat/ubi8"
+CC_IMAGE_TAG="latest"
+DEVICE_LIST=""
+NSD_COUNT=0
 MGR_COUNT=1
 QRM_COUNT=1
 TIMEOUT=3600
 
-while getopts 'n:C:H:b:i:q:m:t:h' opt; do
+while getopts 'N:C:H:b:i:q:m:n:d:t:h' opt; do
     case "${opt}" in
-        n) # a DNS-1123 label must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character
+        N) # a DNS-1123 label must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character
             if [[ $OPTARG =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]];
                 then NAMESPACE=${OPTARG}
                 else echo "! Wrong arg -$opt"; exit 1
@@ -114,6 +118,23 @@ while getopts 'n:C:H:b:i:q:m:t:h' opt; do
             else
                 echo "! Wrong arg -$opt"; exit 1
             fi ;;
+        n) # nsd count must be an integer greater than or equal to 0
+            if [[ $OPTARG =~ ^[0-9]+$ ]] && [[ $OPTARG -ge 0 ]]; then
+                NSD_COUNT=${OPTARG}
+            else
+                echo "! Wrong arg -$opt"; exit 1
+            fi ;;
+        d) # list of devices must consist in a comma separated list of NSD_COUNT "/dev/xxx" strings
+            NO_OF_COMMAS=expr $NSD_COUNT - 1
+            if [[ $NSD_COUNT -gt 0 ]]; then
+                if [[ $OPTARG =~ ^\/dev\/\w+(?:\s*,\s*\/dev\/\w+){$NO_OF_COMMAS}$ ]]; then
+                    DEVICE_LIST=${OPTARG}
+                else
+                    echo "! Wrong arg -$opt"; exit 1
+                fi
+            else
+                echo "! Wrong arg -$opt"; exit 1
+            fi ;;
         t) # timeout must be an integer greater than 0
             if [[ $OPTARG =~ ^[0-9]+$ ]] && [[ $OPTARG -gt 0 ]]; then
                 TIMEOUT=${OPTARG}
@@ -136,6 +157,8 @@ echo "CC_IMAGE_REPO=$CC_IMAGE_REPO"
 echo "CC_IMAGE_TAG=$CC_IMAGE_TAG"
 echo "QRM_COUNT=$QRM_COUNT"
 echo "MGR_COUNT=$MGR_COUNT"
+echo "NSD_COUNT=$NSD_COUNT"
+echo "DEVICE_LIST=$DEVICE_LIST"
 echo "TIMEOUT=$TIMEOUT"
 
 
@@ -159,13 +182,31 @@ sed -i "s/%%%NAMESPACE%%%/${NAMESPACE}/g" "init-configmap.yaml"
 
 cp "$TEMPLATES_DIR/cluster-configmap.template.yaml" "cluster-configmap.yaml"
 sed -i "s/%%%NAMESPACE%%%/${NAMESPACE}/g" "cluster-configmap.yaml"
+
+cp "$TEMPLATES_DIR/nsd-configmap.template.yaml" "nsd-configmap.yaml"
+sed -i "s/%%%NAMESPACE%%%/${NAMESPACE}/g" "nsd-configmap.yaml"
+declare -a mgr_list
 for i in $(seq 1 $MGR_COUNT)
 do
   echo "   ${HOST_NAME%%.*}-gpfs-mgr-$i-0:manager" | tee -a "cluster-configmap.yaml"
+  mgr_list+=("${HOST_NAME%%.*}-gpfs-mgr-$i-0")
 done
+printf -v mgr_joined '%s,' "${mgr_list[@]}"
 for i in $(seq 1 $QRM_COUNT)
 do
   sed -i "s/${HOST_NAME%%.*}-gpfs-mgr-$i-0:manager/${HOST_NAME%%.*}-gpfs-mgr-$i-0:quorum-manager/" "cluster-configmap.yaml"
+done
+IFS=', ' read -r -a nsd_devices <<< "$DEVICE_LIST"
+for i in $(seq 1 $NSD_COUNT)
+do
+  NSD_INDEX=expr $i - 1
+  echo $'   %nsd:\n\
+    device='${nsd_devices[$NSD_INDEX]}'\n\
+    nsd=nsd'$i'\n\
+    servers='"${mgr_joined%,}"'\n\
+    usage=dataAndMetadata\n\
+    failureGroup=1\n\
+    pool=system\n' | tee -a "nsd-configmap.yaml"
 done
 
 # Generate the external service
@@ -328,4 +369,6 @@ echo "CC_IMAGE_REPO=$CC_IMAGE_REPO"
 echo "CC_IMAGE_TAG=$CC_IMAGE_TAG"
 echo "QRM_COUNT=$QRM_COUNT"
 echo "MGR_COUNT=$MGR_COUNT"
+echo "NSD_COUNT=$NSD_COUNT"
+echo "DEVICE_LIST=$DEVICE_LIST"
 echo "TIMEOUT=$TIMEOUT"
