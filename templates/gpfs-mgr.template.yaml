@@ -46,7 +46,7 @@ spec:
           - name: installdir
             mountPath: /usr/lpp
           - name: etcsshdir
-            mountPath: /etc/ssh
+            mountPath: /root/ssh
           - name: rootsshdir
             mountPath: /root/.ssh
       volumes:
@@ -61,7 +61,7 @@ spec:
       - name: nsd-configmap
         configMap:
           name: nsd-configmap
-          defaultMode: 0644
+          defaultMode: 0666
       - name: gendir
         hostPath:
           path: /root/client%%%NUMBER%%%/var_mmfs

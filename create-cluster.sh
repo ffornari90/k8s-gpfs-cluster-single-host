@@ -1,4 +1,4 @@
-#! /bin/bash -x
+#! /bin/bash
 
 # Regular Colors
 Color_Off='\033[0m'       # Text Reset
@@ -194,6 +194,8 @@ sed -i "s/%%%NAMESPACE%%%/${NAMESPACE}/g" "cluster-configmap.yaml"
 cp "$TEMPLATES_DIR/nsd-configmap.template.yaml" "nsd-configmap.yaml"
 sed -i "s/%%%NAMESPACE%%%/${NAMESPACE}/g" "nsd-configmap.yaml"
 declare -a mgr_list
+printf '\n'
+echo -e "${Yellow} Node list: ${Color_Off}"
 for i in $(seq 1 $MGR_COUNT)
 do
   echo "   ${HOST_NAME%%.*}-gpfs-mgr-$i-0:manager" | tee -a "cluster-configmap.yaml"
@@ -205,18 +207,21 @@ do
   sed -i "s/${HOST_NAME%%.*}-gpfs-mgr-$i-0:manager/${HOST_NAME%%.*}-gpfs-mgr-$i-0:quorum-manager/" "cluster-configmap.yaml"
 done
 IFS=', ' read -r -a nsd_devices <<< "$DEVICE_LIST"
+printf '\n'
+echo -e "${Yellow} NSD list: ${Color_Off}"
 for i in $(seq 1 $NSD_COUNT)
 do
   NSD_INDEX=`expr $i - 1`
   PARITY=`expr $i % 2`
   [ $PARITY -eq 0 ] && FG="2" || FG="${PARITY}"
-  echo $'   %nsd:\n\
-    device='${nsd_devices[$NSD_INDEX]}'\n\
-    nsd=nsd'$i'\n\
-    servers='"${mgr_joined%,}"'\n\
-    usage=dataAndMetadata\n\
-    failureGroup='$FG'\n\
-    pool=system\n' | tee -a "nsd-configmap.yaml"
+  echo '   %nsd:
+    device='${nsd_devices[$NSD_INDEX]}'
+    nsd=nsd'$i'
+    servers='"${mgr_joined%,}"'
+    usage=dataAndMetadata
+    failureGroup='$FG'
+    pool=system' | tee -a "nsd-configmap.yaml"
+  printf '\n' | tee -a "nsd-configmap.yaml"
 done
 
 # Generate the external service
@@ -242,6 +247,7 @@ oc adm policy add-scc-to-user privileged -z default -n $NAMESPACE
 # Instantiate the configmap
 kubectl apply -f "init-configmap.yaml"
 kubectl apply -f "cluster-configmap.yaml"
+kubectl apply -f "nsd-configmap.yaml"
 
 # Instantiate the external service
 kubectl apply -f "external-svc.yaml"
@@ -364,17 +370,16 @@ until check_active ${node_states[*]}
 do
   node_states=(`k8s-exec gpfs-mgr1 '/usr/lpp/mmfs/bin/mmgetstate -a | grep gpfs | awk '"'"'{print \$3}'"'"`)
 done
-sleep 30
 
 if [[ $NSD_COUNT -gt 0 ]]; then
     echo -e "${Yellow} Create desired number of NSDs... ${Color_Off}"
-    k8s-exec gpfs-mgr1 "/usr/lpp/mmfs/bin/mmcrnsd -F /root/StanzaFile -v no"
+    k8s-exec gpfs-mgr1 "/usr/lpp/mmfs/bin/mmcrnsd -F /tmp/StanzaFile -v no"
     if [[ "$?" -ne 0 ]]; then exit 1; fi
 fi
 
 if ! [ -z "$FS_NAME" ]; then
     echo -e "${Yellow} Create GPFS file system on previously created NSDs... ${Color_Off}"
-    k8s-exec gpfs-mgr1 "/usr/lpp/mmfs/bin/mmcrfs ${FS_NAME} -F /root/StanzaFile -A no -B 4M -m 1 -M 2 -n 100 -Q no -j scatter -k nfs4 -r 1 -R 2 -T /ibm/${FS_NAME}"
+    k8s-exec gpfs-mgr1 "/usr/lpp/mmfs/bin/mmcrfs ${FS_NAME} -F /tmp/StanzaFile -A no -B 4M -m 1 -M 2 -n 100 -Q no -j scatter -k nfs4 -r 1 -R 2 -T /ibm/${FS_NAME}"
     if [[ "$?" -ne 0 ]]; then exit 1; fi
 
     echo -e "${Yellow} Mount GPFS file system on every manager... ${Color_Off}"

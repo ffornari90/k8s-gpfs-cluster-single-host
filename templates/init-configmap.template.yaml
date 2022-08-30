@@ -6,14 +6,29 @@ metadata:
 data:
   init-container.sh: |
    #!/bin/bash
-   echo "nameserver 8.8.8.8" >> /etc/resolv.conf
-   rm -f /var/run/yum.pid
-   mkdir -p /var/lib/rpm/backup
-   cp -a /var/lib/rpm/__db* /var/lib/rpm/backup/
-   rm -f /var/lib/rpm/__db.[0-9][0-9]*
-   rpm --quiet -qa
-   rpm --rebuilddb
-   yum clean all
+   if [ -z "$DEPENDENCIES" ]; then
+     echo "[centos-8-baseos]
+   name=CentOS-8-BaseOS
+   baseurl=http://mirror.centos.org/centos/8-stream/BaseOS/x86_64/os/
+   enabled=1
+   gpgcheck=0" | tee /etc/yum.repos.d/centos-8-baseos.repo
+     echo "[centos-8-appstream]
+   name=CentOS-8-AppStream
+   baseurl=http://mirror.centos.org/centos/8-stream/AppStream/x86_64/os/
+   enabled=1
+   gpgcheck=0" | tee /etc/yum.repos.d/centos-8-appstream.repo
+     yum install -y http://ds-004.cr.cnaf.infn.it:8080/kernel-rpms/kernel-headers-4.18.0-305.49.1.el8_4.x86_64.rpm
+     yum install -y http://ds-004.cr.cnaf.infn.it:8080/kernel-rpms/kernel-devel-4.18.0-305.49.1.el8_4.x86_64.rpm
+     yum install -y python3 python3-devel python3-pip git \
+     perl initscripts iproute hostname \
+     make cpp gcc gcc-c++ elfutils-devel elfutils \
+     openssh-server glibc-locale-source glibc-all-langpacks
+     pip3 install CherryPy
+     git clone https://github.com/gdraheim/docker-systemctl-replacement.git
+     cp docker-systemctl-replacement/files/docker/systemctl3.py /usr/bin/
+     cp docker-systemctl-replacement/files/docker/systemctl3.py /bin/systemctl
+     cp docker-systemctl-replacement/files/docker/journalctl3.py /bin/journalctl
+   fi
    echo "[gpfs]
    name=gpfs packages
    baseurl=file:///usr/lpp/mmfs/5.1.3.1/gpfs_rpms/
@@ -24,29 +39,8 @@ data:
    baseurl=file:///usr/lpp/mmfs/5.1.3.1/zimon_rpms/rhel8/
    enabled=1
    gpgcheck=0" | tee /etc/yum.repos.d/gpfs.repo
-   echo "[centos-8-baseos]
-   name=CentOS-8-BaseOS
-   baseurl=http://mirror.centos.org/centos/8-stream/BaseOS/x86_64/os/
-   enabled=1
-   gpgcheck=0" | tee /etc/yum.repos.d/centos-8-baseos.repo
-   echo "[centos-8-appstream]
-   name=CentOS-8-AppStream
-   baseurl=http://mirror.centos.org/centos/8-stream/AppStream/x86_64/os/
-   enabled=1
-   gpgcheck=0" | tee /etc/yum.repos.d/centos-8-appstream.repo
-   yum install -y http://ds-004.cr.cnaf.infn.it:8080/kernel-rpms/kernel-headers-4.18.0-305.49.1.el8_4.x86_64.rpm
-   yum install -y http://ds-004.cr.cnaf.infn.it:8080/kernel-rpms/kernel-devel-4.18.0-305.49.1.el8_4.x86_64.rpm
-   yum install -y python3 python3-devel python3-pip git \
-   perl initscripts iproute hostname \
-   make cpp gcc gcc-c++ elfutils-devel elfutils \
-   openssh-server glibc-locale-source glibc-all-langpacks \
-   gpfs.base gpfs.docs gpfs.ext gpfs.gpl gpfs.gskit gpfs.msg.en_US \
+   yum install -y gpfs.base gpfs.docs gpfs.ext gpfs.gpl gpfs.gskit gpfs.msg.en_US \
    gpfs.gss.pmsensors-5.1.3-1.el8.x86_64 gpfs.gss.pmcollector-5.1.3-1.el8.x86_64
-   pip3 install CherryPy
-   git clone https://github.com/gdraheim/docker-systemctl-replacement.git
-   cp docker-systemctl-replacement/files/docker/systemctl3.py /usr/bin/
-   cp docker-systemctl-replacement/files/docker/systemctl3.py /bin/systemctl
-   cp docker-systemctl-replacement/files/docker/journalctl3.py /bin/journalctl
    /usr/lpp/mmfs/bin/mmbuildgpl
    printf 'UUID=%s %s\t\t%s\t%s\t\t%s %s\n' \
    "$(blkid $(df -h /usr/lpp | awk '{print $1}' | grep -v Filesystem) | awk '{print $2}' | awk -F'\"' '{print $2}')" \
@@ -59,12 +53,14 @@ data:
    "$(blkid $(df -h /var/mmfs | awk '{print $1}' | grep -v Filesystem) | awk '{print $3}' | awk -F'\"' '{print $2}')" \
    "defaults" "0" "0" >> /etc/fstab
    mkdir -p /var/run/sshd && mkdir -p /root/.ssh
-    if ! [ "$(ls -A /etc/ssh/ssh_host* 2>/dev/null)" ]; then
+    if ! [ "$(ls -A /root/ssh/ssh_host* 2>/dev/null)" ]; then
      chmod 700 -R /root/.ssh
-     ssh-keygen -t rsa -f /etc/ssh/ssh_host_rsa_key -N ''
-     ssh-keygen -t ecdsa -f /etc/ssh/ssh_host_ecdsa_key -N ''
-     ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N ''
-     chmod 400 /etc/ssh/*_key
+     ssh-keygen -t rsa -f /root/ssh/ssh_host_rsa_key -N ''
+     ssh-keygen -t ecdsa -f /root/ssh/ssh_host_ecdsa_key -N ''
+     ssh-keygen -t ed25519 -f /root/ssh/ssh_host_ed25519_key -N ''
+     chmod 400 /root/ssh/*_key
+     cp /root/ssh/*_key.pub /etc/ssh/
+     cp /root/ssh/*_key /etc/ssh/
    fi
    if ! [ "$(ls -A /root/.ssh/authorized_keys 2>/dev/null)" ]; then
      touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
@@ -81,4 +77,5 @@ data:
    echo "export PATH=\$PATH:/usr/lpp/mmfs/bin" >> /root/.bash_profile
    bash -c "printf \"export LC_CTYPE=en_US.UTF-8\nexport LC_ALL=en_US.UTF-8\n\" | tee -a /root/.bashrc"
    bash -c 'echo -e "export PATH=/usr/lpp/mmfs/bin:\$PATH" | tee -a /root/.bashrc'
+   cp /root/StanzaFile /tmp/
    /usr/sbin/sshd -D
