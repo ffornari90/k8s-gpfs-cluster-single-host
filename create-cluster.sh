@@ -1,4 +1,4 @@
-#! /bin/bash
+#! /bin/bash -x
 
 # Regular Colors
 Color_Off='\033[0m'       # Text Reset
@@ -16,7 +16,7 @@ White='\033[0;37m'        # White
 # **************************************************************************** #
 
 function usage () {
-    echo "Usage: $0 [-N <k8s_namespace>] [-H <hostname>] [-C <cluster_name>] [-b <cc_image_repo>] [-i <cc_image_tag>] [-q <quorum_count>] [-m <manager_count>] [-n <nsd_count>] [-d <nsd_devices>] [-t <timeout>]"
+    echo "Usage: $0 [-N <k8s_namespace>] [-H <hostname>] [-C <cluster_name>] [-b <cc_image_repo>] [-i <cc_image_tag>] [-q <quorum_count>] [-m <manager_count>] [-n <nsd_count>] [-d <nsd_devices>] [-f <fs_name>] [-t <timeout>]"
     echo
     echo "-N    Specify desired kubernetes Namespace on which the instance will live (default is 'ns\$(date +%s)')"
     echo "      It must be a compliant DNS-1123 label and match =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
@@ -29,6 +29,7 @@ function usage () {
     echo "-m    Specify desired number of manager servers (default is 1)"
     echo "-n    Specify desired number of Network Shared Disks (default is 0)"
     echo "-d    Specify desired list of NSD devices (comma separated, e.g.: /dev/sda,/dev/sdb)"
+    echo "-f    Specify desired GPFS file system name (mountpoint is /ibm/<fs_name>)"
     echo "-t    Specify desired timeout for Pods creation in seconds (default is 3600)"
     echo
     echo "-h    Show usage and exit"
@@ -83,19 +84,20 @@ CLUSTER_NAME="gpfs$(date +%s)"
 CC_IMAGE_REPO="redhat/ubi8"
 CC_IMAGE_TAG="latest"
 DEVICE_LIST=""
+FS_NAME=""
 NSD_COUNT=0
 MGR_COUNT=1
 QRM_COUNT=1
 TIMEOUT=3600
 
-while getopts 'N:C:H:b:i:q:m:n:d:t:h' opt; do
+while getopts 'N:C:H:b:i:q:m:n:d:f:t:h' opt; do
     case "${opt}" in
         N) # a DNS-1123 label must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character
             if [[ $OPTARG =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]];
                 then NAMESPACE=${OPTARG}
                 else echo "! Wrong arg -$opt"; exit 1
             fi ;;
-        C) # a DNS-1123 label must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character
+        C) # cluster name must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character
             if [[ $OPTARG =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]];
                 then CLUSTER_NAME=${OPTARG}
                 else echo "! Wrong arg -$opt"; exit 1
@@ -125,15 +127,20 @@ while getopts 'N:C:H:b:i:q:m:n:d:t:h' opt; do
                 echo "! Wrong arg -$opt"; exit 1
             fi ;;
         d) # list of devices must consist in a comma separated list of NSD_COUNT "/dev/xxx" strings
-            NO_OF_COMMAS=expr $NSD_COUNT - 1
+            NO_OF_COMMAS=`expr $NSD_COUNT - 1`
             if [[ $NSD_COUNT -gt 0 ]]; then
-                if [[ $OPTARG =~ ^\/dev\/\w+(?:\s*,\s*\/dev\/\w+){$NO_OF_COMMAS}$ ]]; then
+                if grep -q -P '^/dev/\w+(?:\s*,\s*/dev/\w+){'$NO_OF_COMMAS'}$' <<< $OPTARG; then
                     DEVICE_LIST=${OPTARG}
                 else
                     echo "! Wrong arg -$opt"; exit 1
                 fi
             else
                 echo "! Wrong arg -$opt"; exit 1
+            fi ;;
+        f) # FS name must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character
+            if [[ $OPTARG =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]];
+                then FS_NAME=${OPTARG}
+                else echo "! Wrong arg -$opt"; exit 1
             fi ;;
         t) # timeout must be an integer greater than 0
             if [[ $OPTARG =~ ^[0-9]+$ ]] && [[ $OPTARG -gt 0 ]]; then
@@ -159,6 +166,7 @@ echo "QRM_COUNT=$QRM_COUNT"
 echo "MGR_COUNT=$MGR_COUNT"
 echo "NSD_COUNT=$NSD_COUNT"
 echo "DEVICE_LIST=$DEVICE_LIST"
+echo "FS_NAME=$FS_NAME"
 echo "TIMEOUT=$TIMEOUT"
 
 
@@ -199,13 +207,15 @@ done
 IFS=', ' read -r -a nsd_devices <<< "$DEVICE_LIST"
 for i in $(seq 1 $NSD_COUNT)
 do
-  NSD_INDEX=expr $i - 1
+  NSD_INDEX=`expr $i - 1`
+  PARITY=`expr $i % 2`
+  [ $PARITY -eq 0 ] && FG="2" || FG="${PARITY}"
   echo $'   %nsd:\n\
     device='${nsd_devices[$NSD_INDEX]}'\n\
     nsd=nsd'$i'\n\
     servers='"${mgr_joined%,}"'\n\
     usage=dataAndMetadata\n\
-    failureGroup=1\n\
+    failureGroup='$FG'\n\
     pool=system\n' | tee -a "nsd-configmap.yaml"
 done
 
@@ -336,7 +346,7 @@ for i in $(seq 1 $MGR_COUNT); do
     sleep 0.1
 done
 for pid in ${pids}; do
-  wait ${pid} || let "failure=1"
+    wait ${pid} || let "failure=1"
 done
 if [[ "${failure}" == "1" ]]; then
     echo -e "${Red} Failed to Exec on one of the managers ${Color_Off}"
@@ -355,8 +365,35 @@ do
   node_states=(`k8s-exec gpfs-mgr1 '/usr/lpp/mmfs/bin/mmgetstate -a | grep gpfs | awk '"'"'{print \$3}'"'"`)
 done
 sleep 30
-oc -n $NAMESPACE rsh $(oc -n $NAMESPACE get po -lapp=gpfs-mgr1 -ojsonpath="{.items[0].metadata.name}") \
-/usr/lpp/mmfs/bin/mmhealth cluster show
+
+if [[ $NSD_COUNT -gt 0 ]]; then
+    echo -e "${Yellow} Create desired number of NSDs... ${Color_Off}"
+    k8s-exec gpfs-mgr1 "/usr/lpp/mmfs/bin/mmcrnsd -F /root/StanzaFile -v no"
+    if [[ "$?" -ne 0 ]]; then exit 1; fi
+fi
+
+if ! [ -z "$FS_NAME" ]; then
+    echo -e "${Yellow} Create GPFS file system on previously created NSDs... ${Color_Off}"
+    k8s-exec gpfs-mgr1 "/usr/lpp/mmfs/bin/mmcrfs ${FS_NAME} -F /root/StanzaFile -A no -B 4M -m 1 -M 2 -n 100 -Q no -j scatter -k nfs4 -r 1 -R 2 -T /ibm/${FS_NAME}"
+    if [[ "$?" -ne 0 ]]; then exit 1; fi
+
+    echo -e "${Yellow} Mount GPFS file system on every manager... ${Color_Off}"
+    failure=0; pids="";
+    for i in $(seq 1 $MGR_COUNT); do
+        k8s-exec gpfs-mgr${i} "/usr/lpp/mmfs/bin/mmmount ${FS_NAME}"
+        pids="${pids} $!"
+        sleep 0.1
+    done
+    for pid in ${pids}; do
+        wait ${pid} || let "failure=1"
+    done
+    if [[ "${failure}" == "1" ]]; then
+        echo -e "${Red} Failed to Exec on one of the managers ${Color_Off}"
+        exit 1
+    fi
+fi
+
+oc -n $NAMESPACE rsh $(oc -n $NAMESPACE get po -lapp=gpfs-mgr1 -ojsonpath="{.items[0].metadata.name}") /usr/lpp/mmfs/bin/mmhealth cluster show
 
 # @todo add error handling
 echo -e "${Green} Exec went OK for all the Pods ${Color_Off}"
@@ -371,4 +408,5 @@ echo "QRM_COUNT=$QRM_COUNT"
 echo "MGR_COUNT=$MGR_COUNT"
 echo "NSD_COUNT=$NSD_COUNT"
 echo "DEVICE_LIST=$DEVICE_LIST"
+echo "FS_NAME=$FS_NAME"
 echo "TIMEOUT=$TIMEOUT"
