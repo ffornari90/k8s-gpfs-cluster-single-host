@@ -191,8 +191,11 @@ sed -i "s/%%%NAMESPACE%%%/${NAMESPACE}/g" "init-configmap.yaml"
 cp "$TEMPLATES_DIR/cluster-configmap.template.yaml" "cluster-configmap.yaml"
 sed -i "s/%%%NAMESPACE%%%/${NAMESPACE}/g" "cluster-configmap.yaml"
 
-cp "$TEMPLATES_DIR/nsd-configmap.template.yaml" "nsd-configmap.yaml"
-sed -i "s/%%%NAMESPACE%%%/${NAMESPACE}/g" "nsd-configmap.yaml"
+if [[ $NSD_COUNT -gt 0 ]]; then
+  cp "$TEMPLATES_DIR/nsd-configmap.template.yaml" "nsd-configmap.yaml"
+  sed -i "s/%%%NAMESPACE%%%/${NAMESPACE}/g" "nsd-configmap.yaml"
+fi
+
 declare -a mgr_list
 printf '\n'
 echo -e "${Yellow} Node list: ${Color_Off}"
@@ -208,21 +211,23 @@ do
 done
 IFS=', ' read -r -a nsd_devices <<< "$DEVICE_LIST"
 printf '\n'
-echo -e "${Yellow} NSD list: ${Color_Off}"
-for i in $(seq 1 $NSD_COUNT)
-do
-  NSD_INDEX=`expr $i - 1`
-  PARITY=`expr $i % 2`
-  [ $PARITY -eq 0 ] && FG="2" || FG="${PARITY}"
-  echo '   %nsd:
-    device='${nsd_devices[$NSD_INDEX]}'
-    nsd=nsd'$i'
-    servers='"${mgr_joined%,}"'
-    usage=dataAndMetadata
-    failureGroup='$FG'
-    pool=system' | tee -a "nsd-configmap.yaml"
-  printf '\n' | tee -a "nsd-configmap.yaml"
-done
+if [[ $NSD_COUNT -gt 0 ]]; then
+  echo -e "${Yellow} NSD list: ${Color_Off}"
+  for i in $(seq 1 $NSD_COUNT)
+  do
+    NSD_INDEX=`expr $i - 1`
+    PARITY=`expr $i % 2`
+    [ $PARITY -eq 0 ] && FG="2" || FG="${PARITY}"
+    echo '   %nsd:
+      device='${nsd_devices[$NSD_INDEX]}'
+      nsd=nsd'$i'
+      servers='"${mgr_joined%,}"'
+      usage=dataAndMetadata
+      failureGroup='$FG'
+      pool=system' | tee -a "nsd-configmap.yaml"
+    printf '\n' | tee -a "nsd-configmap.yaml"
+  done
+fi
 
 # Generate the external service
 HOST_IP=$(nslookup $HOST_NAME | grep Address | tail -1 | awk '{print $2}')
@@ -242,13 +247,16 @@ roles_yaml=(gpfs-*.yaml)
 
 # Instantiate the namespace
 kubectl apply -f "namespace-$NAMESPACE.yaml"
-oc adm policy add-scc-to-user privileged -z default -n $NAMESPACE
+if command -v oc &> /dev/null; then
+  oc adm policy add-scc-to-user privileged -z default -n $NAMESPACE
+fi
 
 # Instantiate the configmap
 kubectl apply -f "init-configmap.yaml"
 kubectl apply -f "cluster-configmap.yaml"
-kubectl apply -f "nsd-configmap.yaml"
-
+if [[ $NSD_COUNT -gt 0 ]]; then
+  kubectl apply -f "nsd-configmap.yaml"
+fi
 # Instantiate the external service
 kubectl apply -f "external-svc.yaml"
 
@@ -370,6 +378,7 @@ until check_active ${node_states[*]}
 do
   node_states=(`k8s-exec gpfs-mgr1 '/usr/lpp/mmfs/bin/mmgetstate -a | grep gpfs | awk '"'"'{print \$3}'"'"`)
 done
+k8s-exec gpfs-mgr1 "/usr/lpp/mmfs/bin/mmgetstate -a"
 
 if [[ $NSD_COUNT -gt 0 ]]; then
     echo -e "${Yellow} Create desired number of NSDs... ${Color_Off}"
@@ -398,7 +407,11 @@ if ! [ -z "$FS_NAME" ]; then
     fi
 fi
 
-oc -n $NAMESPACE rsh $(oc -n $NAMESPACE get po -lapp=gpfs-mgr1 -ojsonpath="{.items[0].metadata.name}") /usr/lpp/mmfs/bin/mmhealth cluster show
+if command -v oc &> /dev/null; then
+  oc -n $NAMESPACE rsh $(oc -n $NAMESPACE get po -lapp=gpfs-mgr1 -ojsonpath="{.items[0].metadata.name}") /usr/lpp/mmfs/bin/mmhealth cluster show
+else
+  k8s-exec gpfs-mgr1 "/usr/lpp/mmfs/bin/mmhealth cluster show"
+fi
 
 # @todo add error handling
 echo -e "${Green} Exec went OK for all the Pods ${Color_Off}"
