@@ -38,9 +38,6 @@ spec:
           - name: node-list
             mountPath: /root/node.list
             subPath: node.list
-          - name: nsd-configmap
-            mountPath: /root/StanzaFile
-            subPath: StanzaFile
           - name: gendir
             mountPath: /var/mmfs
           - name: installdir
@@ -58,10 +55,6 @@ spec:
         configMap:
           name: node-list
           defaultMode: 0644
-      - name: nsd-configmap
-        configMap:
-          name: nsd-configmap
-          defaultMode: 0666
       - name: gendir
         hostPath:
           path: /root/client%%%NUMBER%%%/var_mmfs

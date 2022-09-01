@@ -1,0 +1,14 @@
+spec:
+  template:
+    spec:
+      containers:
+      - name: %%%PODNAME%%%
+        volumeMounts:
+          - name: nsd-configmap
+            mountPath: /root/StanzaFile
+            subPath: StanzaFile
+      volumes:
+      - name: nsd-configmap
+        configMap:
+          name: nsd-configmap
+          defaultMode: 0644

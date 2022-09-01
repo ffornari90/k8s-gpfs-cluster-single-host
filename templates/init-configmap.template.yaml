@@ -77,5 +77,8 @@ data:
    echo "export PATH=\$PATH:/usr/lpp/mmfs/bin" >> /root/.bash_profile
    bash -c "printf \"export LC_CTYPE=en_US.UTF-8\nexport LC_ALL=en_US.UTF-8\n\" | tee -a /root/.bashrc"
    bash -c 'echo -e "export PATH=/usr/lpp/mmfs/bin:\$PATH" | tee -a /root/.bashrc'
-   cp /root/StanzaFile /tmp/
+   NSD_FILE=/root/StanzaFile
+   if [ -f "$NSD_FILE" ]; then
+     cp "$NSD_FILE" /tmp/
+   fi
    /usr/sbin/sshd -D

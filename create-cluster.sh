@@ -196,6 +196,9 @@ if [[ $NSD_COUNT -gt 0 ]]; then
   sed -i "s/%%%NAMESPACE%%%/${NAMESPACE}/g" "nsd-configmap.yaml"
 fi
 
+# Generate the manager manifests
+gen_role mgr $MGR_COUNT
+
 declare -a mgr_list
 printf '\n'
 echo -e "${Yellow} Node list: ${Color_Off}"
@@ -227,6 +230,11 @@ if [[ $NSD_COUNT -gt 0 ]]; then
       pool=system' | tee -a "nsd-configmap.yaml"
     printf '\n' | tee -a "nsd-configmap.yaml"
   done
+  cp "$TEMPLATES_DIR/nsd-patch.template.yaml" "nsd-patch.yaml"
+  sed -i "s/%%%PODNAME%%%/${HOST_NAME%%.*}-gpfs-mgr-1/g" "nsd-patch.yaml"
+  kubectl patch --local=true -f "gpfs-mgr1.yaml" --patch "$(cat nsd-patch.yaml)" -o yaml > tmpfile
+  cat tmpfile > "gpfs-mgr1.yaml"
+  rm -f tmpfile
 fi
 
 # Generate the external service
@@ -234,9 +242,6 @@ HOST_IP=$(nslookup $HOST_NAME | grep Address | tail -1 | awk '{print $2}')
 cp "$TEMPLATES_DIR/external-svc.template.yaml" "external-svc.yaml"
 sed -i "s/%%%NAMESPACE%%%/$NAMESPACE/g" "external-svc.yaml"
 sed -i "s/%%%HOST_IP%%%/$HOST_IP/g" "external-svc.yaml"
-
-# Generate the manifests
-gen_role mgr $MGR_COUNT
 
 # **********************************************************************************************
 # Deploy the instance #
@@ -378,12 +383,15 @@ until check_active ${node_states[*]}
 do
   node_states=(`k8s-exec gpfs-mgr1 '/usr/lpp/mmfs/bin/mmgetstate -a | grep gpfs | awk '"'"'{print \$3}'"'"`)
 done
-k8s-exec gpfs-mgr1 "/usr/lpp/mmfs/bin/mmgetstate -a"
 
 if [[ $NSD_COUNT -gt 0 ]]; then
+    k8s-exec gpfs-mgr1 "/usr/lpp/mmfs/bin/mmgetstate -a"
     echo -e "${Yellow} Create desired number of NSDs... ${Color_Off}"
     k8s-exec gpfs-mgr1 "/usr/lpp/mmfs/bin/mmcrnsd -F /tmp/StanzaFile -v no"
     if [[ "$?" -ne 0 ]]; then exit 1; fi
+else
+    sleep 30
+    k8s-exec gpfs-mgr1 "/usr/lpp/mmfs/bin/mmgetstate -a"
 fi
 
 if ! [ -z "$FS_NAME" ]; then
