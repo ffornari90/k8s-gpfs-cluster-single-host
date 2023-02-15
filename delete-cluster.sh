@@ -11,7 +11,7 @@ fi
 namespace=$1
 NSD_FILE=./gpfs-instance-$namespace/nsd-configmap.yaml
 if [ -f "$NSD_FILE" ]; then
-  POD_NAME=$(kubectl -n gpfs-test-cluster get po -lapp=gpfs-mgr1 -ojsonpath="{.items[*].metadata.name}")
+  POD_NAME=$(kubectl -n $namespace get po -lapp=gpfs-mgr1 -ojsonpath="{.items[*].metadata.name}")
   FS_NAME=$(kubectl -n $namespace exec $POD_NAME -- /usr/lpp/mmfs/bin/mmlsmount all_local | awk '{print $3}')
   kubectl -n $namespace exec $POD_NAME -- /usr/lpp/mmfs/bin/mmumount all -a
   kubectl -n $namespace exec $POD_NAME -- /usr/lpp/mmfs/bin/mmdelfs $FS_NAME -p
